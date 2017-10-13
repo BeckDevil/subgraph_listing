@@ -6,6 +6,7 @@
 #include<float.h>
 #include<math.h>
 #include<mpi.h>
+#include<omp.h>
 #include<assert.h>
 #include<string.h>
 #include<fstream>
@@ -44,6 +45,14 @@ Psgl::Psgl(const char* data_graph_file, const char* query_graph_file, bool break
 //		printf("%d %d %d\n", matching_order[i], matching_order_map[i], automorph_group_id[i]);
 //	}
 
+	num_thrds = 2;
+	myTCB = new TCB[num_thrds];
+	for(int thid = 0; thid < num_thrds; ++thid){
+		myTCB[thid].embeddings = 0;
+		myTCB[thid].recursive_calls = 0;
+		myTCB[thid].visited = new uint8_t[query_graph->vert_count];
+		memset(myTCB[thid].visited, UNVISITED, query_graph->vert_count);
+	}
 
 	color			= new uint8_t[query_graph->vert_count];
 	memset(color, CLR_WHITE , query_graph->vert_count);
@@ -57,6 +66,7 @@ Psgl::Psgl(const char* data_graph_file, const char* query_graph_file, bool break
 void Psgl::generic_query_proc()
 {
 	// TODO: Initialization
+	double time;
 	int current_qnode = matching_order[0];
 	for(int i = 0; i < data_graph->vert_count; ++i){
 		// If degree is not satisfied, skip
@@ -73,30 +83,37 @@ void Psgl::generic_query_proc()
 	// Initial set of Gpsi, starting nodes
 	
 	while(!all_gpsi.empty()){
-//		printf("Hello, this is new level expansion\n");
+		time = wtime();
 		std::vector< std::vector<int> > next_gpsi(all_gpsi.begin(), all_gpsi.end());
 		all_gpsi.clear();
-		for(int itr = 0; itr < next_gpsi.size(); ++itr){
-			std::vector<int> my_gpsi = next_gpsi[itr];
-//			for(int i = 0; i < my_gpsi.size(); ++i){
-//				printf("%d ", my_gpsi[i]);
-//			}
-//			printf("\n");
-			expand_instance(my_gpsi);
+#pragma omp parallel num_threads(num_thrds)
+		{
+			double xtime = omp_get_wtime();
+	//		printf("Hello, this is new level expansion\n");
+#pragma omp for schedule(dynamic) nowait
+			for(int itr = 0; itr < next_gpsi.size(); ++itr){
+				int thid = omp_get_thread_num();
+//				printf("Thread %d\n", thid);
+				std::vector<int> my_gpsi = next_gpsi[itr];
+//				for(int i = 0; i < my_gpsi.size(); ++i){
+//					printf("%d ", my_gpsi[i]);
+//				}
+//				printf("\n");
+				expand_instance(my_gpsi);
+			}
 		}
 	}
-	// TODO: Expansion
-	// The core process
-	printf("Total number of Embedding is %d\n", total_embedding_found);
+	printf("Total %d Embeddings are found in %f seconds\n", total_embedding_found, wtime()-time);
 }
 
 // Individual expansion instances 
 void Psgl::expand_instance(Gpsi& my_gpsi)
 {
 	// Get currently expanding v_p and v_d from Gpsi
+	int thid = omp_get_thread_num();
 	int current_qnode = matching_order[my_gpsi.size()-1];
 	color[current_qnode] = CLR_BLACK;
-	visited[current_qnode] = VISITED;
+	myTCB[thid].visited[current_qnode] = VISITED;
 	//int current_dnode = my_gpsi[my_gpsi.size()-1];
 
 //	printf("The size of embedding is %d\n", my_gpsi.size());
@@ -123,7 +140,7 @@ void Psgl::expand_instance(Gpsi& my_gpsi)
 //	printf("next node to match is %d\n", next_qnode);
 	for(int i = query_graph->beg_pos[next_qnode]; i < query_graph->beg_pos[next_qnode+1]; ++i){
 		int vp_prime = query_graph->csr[i];
-		if(visited[vp_prime] == VISITED){
+		if(myTCB[thid].visited[vp_prime] == VISITED){
 			int map_vp_prime = my_gpsi[matching_order_map[vp_prime]];
 //			printf("parent %d\n", my_gpsi[matching_order_map[vp_prime]]);
 			std::vector<int> neighbors = data_graph->sorted_csr[map_vp_prime];
@@ -156,6 +173,7 @@ void Psgl::expand_instance(Gpsi& my_gpsi)
 				continue;
 			my_gpsi[query_graph->vert_count - 1] = *cnode;
 //			printf("%d\n", my_gpsi[2]);
+		#pragma omp critical
 			total_embedding_found++;
 		}
 	}
@@ -168,11 +186,13 @@ void Psgl::expand_instance(Gpsi& my_gpsi)
 				continue;
 			std::vector<int> new_gpsi(my_gpsi.begin(), my_gpsi.end());
 			new_gpsi.push_back(cnode);
+		#pragma omp critical
 			all_gpsi.push_back(new_gpsi);
 		}
 		cnode = cand_list[x];
 		if(cnode != -1){
 			my_gpsi.push_back(cnode);
+		#pragma omp critical
 			all_gpsi.push_back(my_gpsi);
 		}
 	}

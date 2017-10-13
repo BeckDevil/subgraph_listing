@@ -12,11 +12,18 @@
 #define UNVISITED 0
 #define VISITED 1
 
+struct TCB{
+	unsigned long long int embeddings;
+	unsigned long long int recursive_calls;
+	uint8_t *visited;
+};
+
 typedef std::vector<int> Gpsi;
 typedef std::vector<std::vector<int> > Intermediate;
 
 class Psgl{
 	public:
+		int num_thrds;
 		graph *data_graph, *query_graph;
 		const char* data_graph_filename, *query_graph_filename, *preset_filename;
 		bool break_automorph;
@@ -29,6 +36,8 @@ class Psgl{
 		uint8_t *automorph_group_id;
 		uint8_t *color;
 		uint8_t *visited;
+
+		TCB *myTCB;
 
 		std::vector<std::vector<int> > all_gpsi;
 	public:
