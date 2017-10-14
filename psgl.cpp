@@ -45,7 +45,7 @@ Psgl::Psgl(const char* data_graph_file, const char* query_graph_file, bool break
 //		printf("%d %d %d\n", matching_order[i], matching_order_map[i], automorph_group_id[i]);
 //	}
 
-	num_thrds = 2;
+	num_thrds = 32;
 	myTCB = new TCB[num_thrds];
 	for(int thid = 0; thid < num_thrds; ++thid){
 		myTCB[thid].embeddings = 0;
@@ -90,7 +90,7 @@ void Psgl::generic_query_proc()
 		{
 			double xtime = omp_get_wtime();
 	//		printf("Hello, this is new level expansion\n");
-#pragma omp for schedule(dynamic) nowait
+#pragma omp for schedule(dynamic)
 			for(int itr = 0; itr < next_gpsi.size(); ++itr){
 				int thid = omp_get_thread_num();
 //				printf("Thread %d\n", thid);
@@ -103,13 +103,18 @@ void Psgl::generic_query_proc()
 			}
 		}
 	}
+
+	for(int i = 0; i< num_thrds; ++i){
+		total_embedding_found += myTCB[i].embeddings;
+	}
 	printf("Total %d Embeddings are found in %f seconds\n", total_embedding_found, wtime()-time);
 }
 
 // Individual expansion instances 
 void Psgl::expand_instance(Gpsi& my_gpsi)
 {
-	// Get currently expanding v_p and v_d from Gpsi
+	// Get currently expanding v_p and v_d from Gpsii
+	Intermediate my_frontier;
 	int thid = omp_get_thread_num();
 	int current_qnode = matching_order[my_gpsi.size()-1];
 	color[current_qnode] = CLR_BLACK;
@@ -125,16 +130,6 @@ void Psgl::expand_instance(Gpsi& my_gpsi)
 		cand_list.push_back(i);
 	}
 	
-	
-/*	// Explore vp's neighbors loop through the adjacency list
-	for(int i = query_graph->beg_pos[current_qnode]; i < query_graph->beg_pos[current_qnode+1]; ++i){
-		int vp_prime = query_graph->csr[i];
-		if(process_neighbor(my_gpsi, vp_prime, current_dnode, cand_list) == false){
-//			printf("processing neighbor terminated\n");
-			return;
-		}
-	}
-*/
 //	printf("candidate list size is %d \n", cand_list.size());
 	int next_qnode = matching_order[my_gpsi.size()];
 //	printf("next node to match is %d\n", next_qnode);
@@ -144,7 +139,7 @@ void Psgl::expand_instance(Gpsi& my_gpsi)
 			int map_vp_prime = my_gpsi[matching_order_map[vp_prime]];
 //			printf("parent %d\n", my_gpsi[matching_order_map[vp_prime]]);
 			std::vector<int> neighbors = data_graph->sorted_csr[map_vp_prime];
-			cand_list = intersection(cand_list, neighbors);
+			cand_list = intersection(neighbors, cand_list);
 		}
 	}
 
@@ -156,9 +151,19 @@ void Psgl::expand_instance(Gpsi& my_gpsi)
 			continue;
 		}
 		for(std::vector<int>::iterator mitr = my_gpsi.begin(); mitr != my_gpsi.end(); ++mitr){
-			if(cand_list[citr] == *mitr){
+			if(match == *mitr){
 				cand_list[citr] = -1;
 				break;
+			}
+		}
+		//apply  automorphism breaking rule here
+		for(int itr = 0; itr <  my_gpsi.size(); ++itr){
+			int neighbor = matching_order[itr];
+			if(automorph_group_id[neighbor] == automorph_group_id[next_qnode]){
+				if((neighbor < next_qnode && my_gpsi[matching_order_map[neighbor]] > match) || (neighbor > next_qnode && my_gpsi[matching_order_map[neighbor]] < match)){
+					cand_list[citr] = -1;
+					break;
+				}
 			}
 		}
 	}
@@ -172,9 +177,9 @@ void Psgl::expand_instance(Gpsi& my_gpsi)
 			if(*cnode == -1)
 				continue;
 			my_gpsi[query_graph->vert_count - 1] = *cnode;
+		printf("new embedding: %d %d %d\n", my_gpsi[0], my_gpsi[1], my_gpsi[2]);
 //			printf("%d\n", my_gpsi[2]);
-		#pragma omp critical
-			total_embedding_found++;
+			myTCB[thid].embeddings++;
 		}
 	}
 	else{
@@ -186,16 +191,17 @@ void Psgl::expand_instance(Gpsi& my_gpsi)
 				continue;
 			std::vector<int> new_gpsi(my_gpsi.begin(), my_gpsi.end());
 			new_gpsi.push_back(cnode);
-		#pragma omp critical
-			all_gpsi.push_back(new_gpsi);
+			my_frontier.push_back(new_gpsi);
 		}
 		cnode = cand_list[x];
 		if(cnode != -1){
 			my_gpsi.push_back(cnode);
-		#pragma omp critical
-			all_gpsi.push_back(my_gpsi);
+			my_frontier.push_back(my_gpsi);
 		}
 	}
+#pragma omp critical
+	all_gpsi.insert(all_gpsi.end(), my_frontier.begin(), my_frontier.end());
+
 }
 
 /*
